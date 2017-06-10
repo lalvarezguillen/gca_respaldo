@@ -80,7 +80,9 @@ celerybeat-schedule
 *.sage.py
 
 # dotenv
-.env
+.env/
+.env-py2/
+.autoenv
 
 # virtualenv
 .venv
@@ -97,5 +99,11 @@ ENV/
 # mkdocs documentation
 /site
 
+# vscode
+.vscode/
+
 # mypy
 .mypy_cache/
+
+# credentials
+dropbox_credentials.json

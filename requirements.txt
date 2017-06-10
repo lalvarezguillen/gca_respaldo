@@ -1,0 +1,6 @@
+pyodbc
+dropbox
+pytest
+pytest-cov
+pylint
+pep8

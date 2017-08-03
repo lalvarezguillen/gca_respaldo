@@ -1,29 +1,30 @@
 from __future__ import print_function
 import json
+import re
 import datetime
-import traceback
 import os
 import smtplib
 from email.MIMEMultipart import MIMEMultipart
 from email.mime.text import MIMEText
-from datetime import datetime
 import zipfile
 import dropbox
 import pyodbc
 
 
 with open("dropbox_credentials.json", "r") as f:
-    CREDENTIALS = json.load(f)
+    CONFIG = json.load(f)
+DBX = dropbox.Dropbox(CONFIG["api_key"])
+
 
 def upload_backup(filename):
     print("uploading the backup...")
-    dbx = dropbox.Dropbox(CREDENTIALS["api_key"])
-    f = open(filename, "rb")
-    dbx.files_upload(f.read(), "/{}".format(filename))
+    with open(filename, "rb") as backup_bin:
+        DBX.files_upload(backup_bin.read(), "/{}".format(filename))
+
 
 def zip_backup():
     print("Zipping the backups...")
-    filename = "respaldo_bases_de_datos_{}.zip".format(datetime.now().strftime("%d-%m-%Y"))
+    filename = "respaldo_bases_de_datos_{}.zip".format(datetime.datetime.now().strftime("%d-%m-%Y"))
     print(filename)
     with zipfile.ZipFile(filename, "w", zipfile.ZIP_DEFLATED) as respaldo:
         respaldo.write("auto_a.bak")
@@ -32,18 +33,32 @@ def zip_backup():
     os.remove("auto_a.bak")
     os.remove("auto_c.bak")
     os.remove("auto_n.bak")
-
     return filename
 
 
 def get_last_file():
-    dbx = dropbox.Dropbox(CREDENTIALS["api_key"])
-    return dbx.files_list_folder("").entries[-1]
+    return DBX.files_list_folder("").entries[-1]
 
-def get_file_url(file):
-    dbx = dropbox.Dropbox(CREDENTIALS["api_key"])
-    return dbx.sharing_create_shared_link(file.path_lower).url.replace(
-        "dl=0", "dl=1")
+
+def file_is_backup(filename):
+    backup_regex = r'respaldo_bases_de_datos_\d\d-\d\d-\d\d\d\d.zip'
+    return bool(re.match(backup_regex, filename))
+
+
+def delete_old_backups():
+    files = DBX.files_list_folder("").entries
+    if len(files) <= 7:
+        return
+    old_files = [_file for _file in files[:-7]]
+    for _file in old_files:
+        if file_is_backup(_file.name):
+            DBX.files_delete(_file.path_lower)
+
+
+def get_file_url(dbx_file):
+    return DBX.sharing_create_shared_link(dbx_file.path_lower) \
+              .url.replace("dl=0", "dl=1")
+
 
 def get_backup_url():
     backup = get_last_file()
@@ -53,14 +68,11 @@ def get_backup_url():
 
 def generate_email_content(sender, recipient):
     message = MIMEMultipart()
-    backup_date = datetime.now().strftime("%d/%m/%Y")
-
+    backup_date = datetime.datetime.now().strftime("%d/%m/%Y")
     url = get_backup_url()
-    content = """
-    Se Completo el respaldo de las bases de datos.
-    El enlace de descarga es el siguiente:
-    {}
-    """.format(url)
+    content = ("Se Completo el respaldo de las bases de datos."
+               " El enlace de descarga es el siguiente:"
+               " {}").format(url)
 
     message["Subject"] = "Respaldo de base de datos {}".format(backup_date)
     message["To"] = "GCA <{}>".format(recipient)
@@ -68,16 +80,16 @@ def generate_email_content(sender, recipient):
     message.attach(MIMEText(content))
     return message
 
-def mail_backup_link(recipient="adujmovic@gcautopartes.com.ve"):
-    sender_mail = "webmaster@gcautopartes.com.ve"
-    conn = smtplib.SMTP("ceres.calcanet.com:587")
+
+def mail_backup_link(recipient=CONFIG['antonio_email']):
+    sender_mail = CONFIG['mailserver_user']
+    conn = smtplib.SMTP(CONFIG['mailserver_address'])
     conn.ehlo()
     conn.starttls()
     conn.ehlo()
-    conn.login(sender_mail, "El14delnovas")
+    conn.login(CONFIG['mailserver_user'], CONFIG['mailserver_pass'])
 
     message = generate_email_content(sender_mail, recipient)
-
     conn.sendmail(sender_mail, recipient, message.as_string())
 
 
@@ -89,20 +101,20 @@ def main():
     params = [
         {
             "db_name": "AUTO_A",
-            "uid": CREDENTIALS["uid"],
-            "pwd": CREDENTIALS["pwd"],
+            "uid": CONFIG["uid"],
+            "pwd": CONFIG["pwd"],
             "output": os.path.join(os.getcwd(), "auto_a.bak")
         },
         {
             "db_name": "AUTO_C",
-            "uid": CREDENTIALS["uid"],
-            "pwd": CREDENTIALS["pwd"],
+            "uid": CONFIG["uid"],
+            "pwd": CONFIG["pwd"],
             "output": os.path.join(os.getcwd(), "auto_c.bak")
         },
         {
             "db_name": "AUTO_N",
-            "uid": CREDENTIALS["uid"],
-            "pwd": CREDENTIALS["pwd"],
+            "uid": CONFIG["uid"],
+            "pwd": CONFIG["pwd"],
             "output": os.path.join(os.getcwd(), "auto_n.bak")
         }
     ]
@@ -114,10 +126,11 @@ def main():
         c.execute("backup database ? to disk=?", (db_params["db_name"], db_params["output"]))
 
     #Compress the backups into a zip, named with the backup date
-    file = zip_backup()
+    filename = zip_backup()
     #Upload the resulting file to dropbox
-    upload_backup(file)
+    upload_backup(filename)
     mail_backup_link()
+    delete_old_backups()
 
 
 if __name__ == "__main__":
